@@ -18,6 +18,7 @@ api.loadPlugins = loadPlugins;
 api.callHook = callHook;
 api.loadPermissions = loadPermissions;
 api.runCommand = runCommand;
+api.hasPermission = hasPermission;
 
 // Functions
 function loadPluginConfig(name, callback) {
@@ -63,6 +64,8 @@ function loadPlugin(name, callback) {
                         "Command '" + commandName + "' already exists!";
 
                 commands[commandName] = plugin.commands[commandName];
+                if (!commands[commandName].permission)
+                    commands[commandName].permission = name + "." + commandName;
             }
         }
 
@@ -81,7 +84,9 @@ function loadPlugin(name, callback) {
 }
 
 function unloadPlugin(name, callback) {
-    if (!plugins[name]) {
+    var plugin = plugins[name];
+
+    if (!plugin) {
         if (callback) callback();
         return;
     }
@@ -100,7 +105,7 @@ function unloadPlugin(name, callback) {
     delete plugins[name];
 
     // Delete cache
-    var scriptPath = "plugins/" + name + "/index.js";
+    var scriptPath = "./plugins/" + name + "/index.js";
     delete require.cache[require.resolve(scriptPath)];
 
     console.log("Plugin '" + name + "' was unloaded!");
@@ -146,7 +151,16 @@ function createDefaults(callback) {
 
     function createConfigFiles() {
         fs.access("config/permissions.json", fs.R_OK, function(err) {
-            if (err) fs.writeFile("config/permissions.json", "{}", stepDone);
+            if (err) fs.writeFile("config/permissions.json", '{\n' +
+                '    "servers": {},\n' +
+                '    "channels": {},\n' +
+                '    "users": {\n' +
+                '        "default": [\n' +
+                '            "*",\n' +
+                '            "-admin.*"\n' +
+                '        ]\n' +
+                '    }\n' +
+            '}', stepDone);
             else stepDone();
         });
 
@@ -190,14 +204,71 @@ function loadPermissions(callback) {
     });
 }
 
+function hasPermission(context, permission) {
+    var userPerms = [];
+
+    if (permissions.servers && permissions.servers.default)
+        userPerms = userPerms.concat(permissions.servers.default);
+    if (permissions.servers && permissions.servers[context.serverId])
+        userPerms = userPerms.concat(permissions.servers[context.serverId]);
+
+    if (permissions.channels && permissions.channels.default)
+        userPerms = userPerms.concat(permissions.channels.default);
+    if (permissions.channels && permissions.channels[context.channelId])
+        userPerms = userPerms.concat(permissions.channels[context.channelId]);
+
+    if (permissions.users && permissions.users.default)
+            userPerms = userPerms.concat(permissions.users.default);
+    if (permissions.users && permissions.users[context.userId])
+        userPerms = userPerms.concat(permissions.users[context.userId]);
+
+    var permParts = permission.split(".");
+    for (var i = userPerms.length - 1; i >= 0; i--) {
+        var userPerm = userPerms[i];
+        if (userPerm.length < 1) continue;
+
+        var negated = false;
+        if (userPerm[0] == "-") {
+            negated = true;
+            userPerm = userPerm.substr(1);
+        }
+
+        var userPermParts = userPerm.split(".");
+        if (userPermParts.length > permParts.length) continue;
+        var matched = true;
+
+        for (var j = 0; j < permParts.length; j++) {
+            if (userPermParts[j] == "*") {
+                return !negated;
+            } else if (userPermParts[j] != permParts[j]) {
+                matched = false;
+                break;
+            }
+        }
+
+        if (matched)  return !negated;
+    }
+
+    return false;
+}
+
 function runCommand(args, context) {
     if (args.length < 1) return;
-    if (commands[args[0]]) {
-        console.log(context.username + " (" + context.userId + " @ " + context.channelId + " @ " +
-            context.serverId + ") ran ", args);
+    var command = commands[args[0]];
+    if (command) {
+        if (!hasPermission(context, command.permission)) {
+            console.warn(context.username, "(" + context.userId, "@", context.channelId + " @",
+                context.serverId + ") no permission for", args);
+
+            callHook("noPermission", [args, context]);
+            return;
+        }
+
+        console.log(context.username, "(" + context.userId, "@", context.channelId + " @",
+            context.serverId + ") ran", args);
 
         try {
-            var result = commands[args[0]].func(args, context, function(msg) {
+            var result = command.func(args, context, function(msg) {
                 // Callback reply
                 discord.sendMessage({
                     to: context.channelId,
@@ -213,7 +284,8 @@ function runCommand(args, context) {
                 });
             }
         } catch (ex) {
-            console.log("Error running command '" + args[0] + "'!", ex, ex.stack);
+            console.error("Error running command '" + args[0] + "'!", ex.stack);
+            callHook("error", ex, command.plugin);
         }
     }
 }
@@ -237,6 +309,7 @@ function createDiscordClient() {
 
     discord.on("ready", function() {
         console.log("Logged into Discord as", discord.username);
+        callHook("login");
     });
 
     discord.on("message", function(username, userId, channelId, message) {
@@ -255,7 +328,7 @@ function createDiscordClient() {
     });
 
     discord.on("disconnected", function() {
-        console.log("Discord connection lost! Reconnecting in 5 seconds");
+        console.warn("Discord connection lost! Reconnecting in 5 seconds");
         setTimeout(discord.connect, 5000);
     });
 }
