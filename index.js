@@ -167,8 +167,7 @@ function createDefaults(callback) {
         fs.access("config/login.json", fs.R_OK, function(err) {
             if (err) {
                 fs.writeFile("config/login.json", "{\n" +
-                    '    "email": "decentbot",\n' +
-                    '    "password": "decentbot"\n' +
+                    '    "token": "decentbot"\n' +
                 "}", stepDone);
             } else {
                 stepDone();
@@ -303,8 +302,7 @@ function createDiscordClient() {
     console.log("Creating Discord client...");
     api.discord = discord = new DiscordClient({
         autorun: true,
-        email: loginConfig.email,
-        password: loginConfig.password
+        token: loginConfig.token
     });
 
     discord.on("ready", function() {
